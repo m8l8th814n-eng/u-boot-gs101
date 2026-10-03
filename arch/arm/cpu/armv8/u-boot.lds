@@ -154,7 +154,14 @@ SECTIONS
 	/*
 	 * arch/arm/lib/crt0_64.S assumes __bss_start - __bss_end % 8 == 0
 	 */
-	.bss ADDR(.rela.dyn) (OVERLAY) : {
+	/*
+	 * ld.lld does not know the OVERLAY type and links .bss at 0, which
+	 * shrinks mon_len to the BSS size so relocation copies only that much.
+	 * NOLOAD at the same address keeps .bss on top of .rela.dyn, which is
+	 * free once the PIE fixups are done, and away from the appended DTB.
+	 */
+	/* .bss ADDR(.rela.dyn) (OVERLAY) : { */
+	.bss ADDR(.rela.dyn) (NOLOAD) : {
 		__bss_start = .;
 		*(.bss*)
 		. = ALIGN(8);

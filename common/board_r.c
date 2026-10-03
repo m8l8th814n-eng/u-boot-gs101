@@ -786,6 +786,8 @@ void board_init_r(gd_t *new_gd, ulong dest_addr)
 	 * Do the same with log drivers since the memory may not be available.
 	 */
 	gd->flags &= ~(GD_FLG_SERIAL_READY | GD_FLG_LOG_READY);
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+		printf("board_init_r entered\n");
 
 	/*
 	 * Set up the new global data pointer. So far only x86 does this

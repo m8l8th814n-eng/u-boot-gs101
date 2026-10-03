@@ -189,24 +189,34 @@ int efi_init_early(void)
 	efi_status_t ret;
 
 	/* Allow unaligned memory access */
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+		printf("efi: allow_unaligned\n");
 	allow_unaligned();
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+		printf("efi: root_node\n");
 
 	/* Initialize root node */
 	ret = efi_root_node_register();
 	if (ret != EFI_SUCCESS)
 		goto out;
 
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+		printf("efi: console\n");
 	ret = efi_console_register();
 	if (ret != EFI_SUCCESS)
 		goto out;
 
 	/* Initialize EFI driver uclass */
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+		printf("efi: driver_init\n");
 	ret = efi_driver_init();
 	if (ret != EFI_SUCCESS)
 		goto out;
 
 	return 0;
 out:
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+		printf("efi: init_early failed %lx\n", (ulong)ret);
 	/* never re-init UEFI subsystem */
 	efi_obj_list_initialized = ret;
 

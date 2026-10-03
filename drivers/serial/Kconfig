@@ -526,6 +526,13 @@ config DEBUG_UART_GOLDFISH
 	  start up driver model. The driver will be available until the real
 	  driver model serial is running.
 
+config DEBUG_UART_ORIOLE_FB
+	bool "Google Pixel 6 framebuffer text console"
+	depends on TARGET_ORIOLE
+	help
+	  Draw debug UART output as text into the framebuffer the bootloader
+	  left scanning out on the Pixel 6, for boards without a serial cable.
+
 endchoice
 
 config DEBUG_UART_BASE

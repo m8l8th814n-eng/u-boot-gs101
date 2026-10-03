@@ -1,0 +1,6 @@
+GOOGLE PIXEL 6 (ORIOLE) BOARD
+M:	Simon <m8l8th814n@gmail.com>
+S:	Maintained
+F:	board/google/oriole/
+F:	configs/oriole_defconfig
+F:	include/configs/oriole.h

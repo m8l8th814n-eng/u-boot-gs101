@@ -7,6 +7,8 @@
 #define __INITCALL_H
 
 #include <asm/types.h>
+#include <linux/kconfig.h>
+#include <stdio.h>
 #include <event.h>
 #include <hang.h>
 
@@ -14,6 +16,8 @@ _Static_assert(EVT_COUNT < 256, "Can only support 256 event types with 8 bits");
 
 #define INITCALL(_call) \
 	do { \
+		if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB)) \
+			printf("> %s\n", #_call); \
 		if (_call()) { \
 			printf("%s(): initcall %s() failed\n", __func__, \
 			       #_call); \

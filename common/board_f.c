@@ -772,6 +772,11 @@ static int setup_reloc(void)
 		debug("Relocating to %08lx, new gd at %08lx, sp at %08lx\n",
 		      gd->relocaddr, (ulong)map_to_sysmem(gd->new_gd),
 		      gd->start_addr_sp);
+		if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB))
+			printf("reloc to %08lx off %08lx gd %08lx sp %08lx mon %08lx\n",
+			       gd->relocaddr, gd->reloc_off,
+			       (ulong)map_to_sysmem(gd->new_gd),
+			       gd->start_addr_sp, gd->mon_len);
 	}
 
 	return 0;

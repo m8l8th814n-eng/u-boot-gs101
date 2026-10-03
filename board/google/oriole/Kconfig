@@ -1,0 +1,12 @@
+if TARGET_ORIOLE
+
+config SYS_BOARD
+	default "oriole"
+
+config SYS_VENDOR
+	default "google"
+
+config SYS_CONFIG_NAME
+	default "oriole"
+
+endif

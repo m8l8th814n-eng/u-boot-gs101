@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0+
+
+&usbdrd31 {
+	status = "okay";
+	/delete-property/ clocks;
+	/delete-property/ clock-names;
+};
+
+&usbdrd31_dwc3 {
+	status = "okay";
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	/delete-property/ clocks;
+	/delete-property/ clock-names;
+	/delete-property/ phys;
+	/delete-property/ phy-names;
+};

@@ -23,6 +23,14 @@ config UFS_CADENCE
 	  This selects the platform driver for the Cadence UFS host
 	  controller present on present TI's J721e devices.
 
+config UFS_GS101
+	bool "Google Tensor gs101 UFS host controller"
+	depends on UFS
+	help
+	  UFS host controller and PHY support for Google Tensor gs101 (Pixel 6),
+	  ported from the Linux exynos UFS driver. Relies on the stock bootloader
+	  having set up the UFS clocks and power.
+
 config UFS_MEDIATEK
 	bool "MediaTek UFS Host Controller Driver"
 	depends on UFS && ARCH_MEDIATEK

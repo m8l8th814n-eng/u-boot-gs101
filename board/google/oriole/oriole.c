@@ -148,8 +148,10 @@ int board_early_init_f(void)
 	writel(0, GS101_WDT_CL0 + WTCON);
 	writel(0, GS101_WDT_CL1 + WTCON);
 	oriole_take_over_display();
-	debug_uart_init();
-	printascii("oriole: board_early_init_f\n");
+	if (IS_ENABLED(CONFIG_DEBUG_UART_ORIOLE_FB)) {
+		debug_uart_init();
+		printascii("oriole: board_early_init_f\n");
+	}
 	/* oriole_mark(0, 0xffff0000); */
 	return 0;
 }

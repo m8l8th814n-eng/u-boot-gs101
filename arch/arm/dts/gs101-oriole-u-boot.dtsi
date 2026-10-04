@@ -15,3 +15,12 @@
 	/delete-property/ phys;
 	/delete-property/ phy-names;
 };
+
+&ufs_0 {
+	status = "okay";
+	/delete-property/ dma-coherent;
+};
+
+&ufs_0_phy {
+	status = "okay";
+};

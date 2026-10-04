@@ -2028,6 +2028,10 @@ static int ufshcd_change_power_mode(struct ufs_hba *hba,
 		return 0;
 	}
 
+	ret = ufshcd_vops_pwr_change_notify(hba, PRE_CHANGE, pwr_mode);
+	if (ret)
+		return ret;
+
 	/*
 	 * Configure attributes for power mode change with below.
 	 * - PA_RXGEAR, PA_ACTIVERXDATALANES, PA_RXTERMINATION,
@@ -2070,7 +2074,7 @@ static int ufshcd_change_power_mode(struct ufs_hba *hba,
 	/* Copy new Power Mode to power info */
 	memcpy(&hba->pwr_info, pwr_mode, sizeof(struct ufs_pa_layer_attr));
 
-	return ret;
+	return ufshcd_vops_pwr_change_notify(hba, POST_CHANGE, pwr_mode);
 }
 
 /**

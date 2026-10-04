@@ -5,9 +5,7 @@
  * Ported from the Linux exynos UFS host driver (ufs-exynos.c) and the
  * Samsung UFS PHY driver (phy-samsung-ufs.c, phy-gs101-ufs.c). The stock
  * bootloader has the UFS clocks, power and PHY isolation set up already, so
- * this only programs the controller, UniPro and the PHY calibration. The
- * link is kept in PWM (SLOW) mode: the HS calibration steps need power-mode
- * change hooks the U-Boot UFS core does not provide.
+ * this only programs the controller, UniPro and the PHY calibration.
  */
 
 #include <dm.h>
@@ -114,6 +112,17 @@
 	PHY_APB_ADDR((reg) + (lane) * PHY_GS101_LANE_OFFSET)
 #define TRSV_REG338		0x338
 #define LN0_MON_RX_CAL_DONE	BIT(3)
+#define TRSV_REG339		0x339
+#define LN0_MON_RX_CDR_FLD_CK_MODE_DONE	BIT(3)
+#define TRSV_REG222		0x222
+#define LN0_OVRD_RX_CDR_EN	BIT(4)
+#define LN0_RX_CDR_EN		BIT(3)
+
+/* Linux selects RX lanes from PA_MAXDATALANES on (rx_sel_idx) */
+#define RX_SEL(lane)		(PA_MAXDATALANES + (lane))
+
+#define PA_DBG_OV_TM		0x9540
+#define RX_SYNC_MASK_LENGTH	0x0321
 
 struct gs101_phy_cfg {
 	u16 off;
@@ -144,6 +153,14 @@ static const struct gs101_phy_cfg gs101_phy_pre_init[] = {
 	C(0x43, 0x18), C(0x43, 0x00),
 };
 
+static const struct gs101_phy_cfg gs101_phy_pre_pwr_hs[] = {
+	T(0x369, 0x11), T(0x246, 0x03),
+};
+
+static const struct gs101_phy_cfg gs101_phy_post_pwr_hs[] = {
+	C(0x08, 0x60), T(0x222, 0x08), T(0x246, 0x01),
+};
+
 struct gs101_ufs {
 	struct ufs_hba *hba;
 	void __iomem *hci;
@@ -171,6 +188,44 @@ static long gs101_calc_time_cntr(long period)
 	long fraction = ((1000000000L % pclk) * precise) / pclk;
 
 	return (period * precise) / ((clk_period * precise) + fraction);
+}
+
+static void gs101_phy_config(struct gs101_ufs *ufs,
+			     const struct gs101_phy_cfg *cfg, int n)
+{
+	int i, lane;
+
+	for (i = 0; i < n; i++) {
+		const struct gs101_phy_cfg *c = &cfg[i];
+
+		for (lane = 0; lane < ufs->avail_ln; lane++) {
+			if (!c->trsv) {
+				if (lane == 0)
+					writel(c->val, ufs->pma + PHY_APB_ADDR(c->off));
+				continue;
+			}
+			writel(c->val, ufs->pma + PHY_TRSV_ADDR(c->off, lane));
+		}
+	}
+}
+
+static int gs101_phy_wait_cdr_lock(struct gs101_ufs *ufs, int lane)
+{
+	int i;
+
+	for (i = 0; i < 100; i++) {
+		udelay(40);
+		if (readl(ufs->pma + PHY_TRSV_ADDR(TRSV_REG339, lane)) &
+		    LN0_MON_RX_CDR_FLD_CK_MODE_DONE)
+			return 0;
+		udelay(40);
+		writel(LN0_OVRD_RX_CDR_EN,
+		       ufs->pma + PHY_TRSV_ADDR(TRSV_REG222, lane));
+		writel(LN0_OVRD_RX_CDR_EN | LN0_RX_CDR_EN,
+		       ufs->pma + PHY_TRSV_ADDR(TRSV_REG222, lane));
+	}
+	dev_err(ufs->hba->dev, "phy lane %d cdr lock timeout\n", lane);
+	return -ETIMEDOUT;
 }
 
 static int gs101_phy_calibrate_init(struct gs101_ufs *ufs)
@@ -274,17 +329,22 @@ static void gs101_ufs_pre_link(struct gs101_ufs *ufs)
 
 	ufshcd_dme_set(hba, UIC_ARG_MIB(0x200), 0x40);
 	for (i = 0; i < ufs->avail_ln; i++) {
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_CLK_PRD, i), clk_prd);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_CLK_PRD_EN, i), 0x0);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_LINERESET_VALUE2, i),
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_CLK_PRD, RX_SEL(i)),
+			       clk_prd);
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_CLK_PRD_EN, RX_SEL(i)),
+			       0x0);
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_LINERESET_VALUE2,
+						    RX_SEL(i)),
 			       (rx_reset >> 16) & 0xff);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_LINERESET_VALUE1, i),
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_LINERESET_VALUE1,
+						    RX_SEL(i)),
 			       (rx_reset >> 8) & 0xff);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_LINERESET_VALUE0, i),
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_RX_LINERESET_VALUE0,
+						    RX_SEL(i)),
 			       rx_reset & 0xff);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x2f, i), 0x69);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x84, i), 0x1);
-		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x25, i), 0xf6);
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x2f, RX_SEL(i)), 0x69);
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x84, RX_SEL(i)), 0x1);
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(0x25, RX_SEL(i)), 0xf6);
 	}
 	for (i = 0; i < ufs->avail_ln; i++) {
 		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(VND_TX_CLK_PRD, i), clk_prd);
@@ -390,25 +450,91 @@ static void gs101_ufs_setup_xfer_req(struct ufs_hba *hba, int tag,
 static int gs101_ufs_get_max_pwr_mode(struct ufs_hba *hba,
 				      struct ufs_pwr_mode_info *max)
 {
+	/* the gs101 host goes up to HS-G4, rate B as Linux negotiates */
+	if (max->info.pwr_rx == FAST_MODE && max->info.gear_rx > 4)
+		max->info.gear_rx = 4;
+	if (max->info.pwr_tx == FAST_MODE && max->info.gear_tx > 4)
+		max->info.gear_tx = 4;
+	max->info.hs_rate = PA_HS_MODE_B;
+	return 0;
+}
+
+static void gs101_ufs_sync_pattern_mask(struct gs101_ufs *ufs,
+					struct ufs_pa_layer_attr *pwr)
+{
+	struct ufs_hba *hba = ufs->hba;
+	u32 g = max(pwr->gear_rx, pwr->gear_tx);
+	u32 sync_len, mask;
+	int i;
+
+	if (g == 1)
+		sync_len = 80 * 1000;
+	else if (g == 2)
+		sync_len = 40 * 1000;
+	else if (g == 3)
+		sync_len = 20 * 1000;
+	else
+		return;
+
+	mask = (gs101_calc_time_cntr(sync_len) >> 8) & 0xff;
+	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_OV_TM), 1);
+	for (i = 0; i < ufs->avail_ln; i++)
+		ufshcd_dme_set(hba, UIC_ARG_MIB_SEL(RX_SYNC_MASK_LENGTH, RX_SEL(i)),
+			       mask);
+	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_DBG_OV_TM), 0);
+}
+
+static int gs101_ufs_pwr_change_notify(struct ufs_hba *hba,
+				       enum ufs_notify_change_status status,
+				       struct ufs_pa_layer_attr *pwr)
+{
 	struct gs101_ufs *ufs = dev_get_priv(hba->dev);
+	bool hs = pwr->pwr_rx == FAST_MODE || pwr->pwr_rx == FASTAUTO_MODE ||
+		  pwr->pwr_tx == FAST_MODE || pwr->pwr_tx == FASTAUTO_MODE;
+	int lane, err;
 
-	max->info.pwr_rx = SLOW_MODE;
-	max->info.pwr_tx = SLOW_MODE;
-	max->info.gear_rx = 1;
-	max->info.gear_tx = 1;
+	if (status == PRE_CHANGE) {
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA0), 12000);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA1), 32000);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA2), 16000);
+		writel(8064, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER0);
+		writel(28224, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER1);
+		writel(20160, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER2);
+		writel(12000, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER0);
+		writel(32000, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER1);
+		writel(16000, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER2);
 
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA0), 12000);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA1), 32000);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(PA_PWRMODEUSERDATA2), 16000);
-	writel(8064, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER0);
-	writel(28224, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER1);
-	writel(20160, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_LOCALL2TIMER2);
-	writel(12000, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER0);
-	writel(32000, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER1);
-	writel(16000, ufs->unipro + UNIPRO_DME_POWERMODE_REQ_REMOTEL2TIMER2);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(DL_FC0PROTTIMEOUTVAL), 8064);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(DL_TC0REPLAYTIMEOUTVAL), 28224);
-	ufshcd_dme_set(hba, UIC_ARG_MIB(DL_AFC0REQTIMEOUTVAL), 20160);
+		if (hs) {
+			gs101_ufs_sync_pattern_mask(ufs, pwr);
+			/*
+			 * Linux's tensor_gs101_pre_pwr_hs_config has no end
+			 * marker, so its loop runs on into the post table that
+			 * follows it; apply both here to match what Linux does.
+			 */
+			gs101_phy_config(ufs, gs101_phy_pre_pwr_hs,
+					 ARRAY_SIZE(gs101_phy_pre_pwr_hs));
+			gs101_phy_config(ufs, gs101_phy_post_pwr_hs,
+					 ARRAY_SIZE(gs101_phy_post_pwr_hs));
+		}
+
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_FC0PROTTIMEOUTVAL), 8064);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_TC0REPLAYTIMEOUTVAL), 28224);
+		ufshcd_dme_set(hba, UIC_ARG_MIB(DL_AFC0REQTIMEOUTVAL), 20160);
+		return 0;
+	}
+
+	if (hs) {
+		gs101_phy_config(ufs, gs101_phy_post_pwr_hs,
+				 ARRAY_SIZE(gs101_phy_post_pwr_hs));
+		for (lane = 0; lane < ufs->avail_ln; lane++) {
+			err = gs101_phy_wait_cdr_lock(ufs, lane);
+			if (err)
+				return err;
+		}
+	}
+	dev_info(hba->dev, "power mode %s G%u L%u\n", hs ? "HS" : "PWM",
+		 max(pwr->gear_rx, pwr->gear_tx),
+		 max(pwr->lane_rx, pwr->lane_tx));
 	return 0;
 }
 
@@ -462,6 +588,7 @@ static struct ufs_hba_ops gs101_ufs_ops = {
 	.link_startup_notify = gs101_ufs_link_startup_notify,
 	.device_reset = gs101_ufs_device_reset,
 	.setup_xfer_req = gs101_ufs_setup_xfer_req,
+	.pwr_change_notify = gs101_ufs_pwr_change_notify,
 };
 
 static int gs101_ufs_probe(struct udevice *dev)

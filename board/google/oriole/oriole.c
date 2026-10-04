@@ -14,6 +14,8 @@
 #include <time.h>
 #include <video.h>
 #include <env.h>
+#include <fdt_support.h>
+#include <linux/libfdt.h>
 #include <linux/arm-smccc.h>
 #include <linux/bitops.h>
 #include <linux/sizes.h>
@@ -118,16 +120,86 @@ static struct mm_region oriole_mem_map[] = {
 		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) |
 			 PTE_BLOCK_INNER_SHARE,
 	}, {
+		/* DRAM above 4 GiB, where the remaining banks live */
+		.virt = 0x800000000UL,
+		.phys = 0x800000000UL,
+		.size = 0x800000000UL,
+		.attrs = PTE_BLOCK_MEMTYPE(MT_NORMAL) |
+			 PTE_BLOCK_INNER_SHARE,
+	}, {
 		0,
 	}
 };
 
 struct mm_region *mem_map = oriole_mem_map;
 
+extern ulong oriole_abl_fdt;
+
+static struct {
+	u64 start;
+	u64 size;
+} oriole_banks[CONFIG_NR_DRAM_BANKS] __section(".data");
+static int oriole_nbanks __section(".data");
+
+/* Read the memory banks the stock bootloader filled into its device tree */
+static int oriole_abl_banks(void)
+{
+	const void *fdt = (const void *)oriole_abl_fdt;
+	int node, na, ns, len, n = 0;
+	const fdt32_t *reg;
+
+	if (!fdt || fdt_check_header(fdt))
+		return 0;
+	na = fdt_address_cells(fdt, 0);
+	ns = fdt_size_cells(fdt, 0);
+
+	for (node = fdt_node_offset_by_prop_value(fdt, -1, "device_type",
+						  "memory", 7);
+	     node >= 0;
+	     node = fdt_node_offset_by_prop_value(fdt, node, "device_type",
+						  "memory", 7)) {
+		reg = fdt_getprop(fdt, node, "reg", &len);
+		if (!reg)
+			continue;
+		len /= sizeof(*reg);
+		while (len >= na + ns && n < CONFIG_NR_DRAM_BANKS) {
+			oriole_banks[n].start = fdt_read_number(reg, na);
+			oriole_banks[n].size = fdt_read_number(reg + na, ns);
+			if (oriole_banks[n].size)
+				n++;
+			reg += na + ns;
+			len -= na + ns;
+		}
+	}
+	return n;
+}
+
 int dram_init(void)
 {
+	int i;
+
 	/* oriole_mark(1, 0xffffff00); */
-	gd->ram_size = SZ_2G;
+	oriole_nbanks = oriole_abl_banks();
+	if (!oriole_nbanks) {
+		oriole_banks[0].start = 0x80000000;
+		oriole_banks[0].size = SZ_2G;
+		oriole_nbanks = 1;
+	}
+
+	gd->ram_size = 0;
+	for (i = 0; i < oriole_nbanks; i++)
+		gd->ram_size += oriole_banks[i].size;
+	return 0;
+}
+
+int dram_init_banksize(void)
+{
+	int i;
+
+	for (i = 0; i < oriole_nbanks; i++) {
+		gd->dram[i].start = oriole_banks[i].start;
+		gd->dram[i].size = oriole_banks[i].size;
+	}
 	return 0;
 }
 
@@ -319,6 +391,7 @@ static void oriole_dump_dsim(void)
 int board_late_init(void)
 {
 	env_set_ulong("oriole_video_ret", (ulong)(long)oriole_video_ret);
+	env_set_hex("abl_fdt", oriole_abl_fdt);
 	/* oriole_mark(3, 0xff0000ff); */
 	/* oriole_bits(920, readl(GS101_DSIM0 + 0x0c)); */
 	/* oriole_bits(1000, readl(GS101_DSIM0 + 0x1c)); */

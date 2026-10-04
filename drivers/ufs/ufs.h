@@ -529,6 +529,9 @@ struct ufs_hba_ops {
 	int (*phy_initialization)(struct ufs_hba *hba);
 	int (*device_reset)(struct ufs_hba *hba);
 	void (*setup_xfer_req)(struct ufs_hba *hba, int tag, bool is_scsi_cmd);
+	int (*pwr_change_notify)(struct ufs_hba *hba,
+				 enum ufs_notify_change_status status,
+				 struct ufs_pa_layer_attr *pwr);
 };
 
 enum ufshcd_quirks {
@@ -761,6 +764,16 @@ static inline int ufshcd_ops_phy_initialization(struct ufs_hba *hba)
 {
 	if (hba->ops && hba->ops->phy_initialization)
 		return hba->ops->phy_initialization(hba);
+
+	return 0;
+}
+
+static inline int ufshcd_vops_pwr_change_notify(struct ufs_hba *hba,
+						enum ufs_notify_change_status status,
+						struct ufs_pa_layer_attr *pwr)
+{
+	if (hba->ops && hba->ops->pwr_change_notify)
+		return hba->ops->pwr_change_notify(hba, status, pwr);
 
 	return 0;
 }

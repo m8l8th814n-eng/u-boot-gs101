@@ -26,11 +26,16 @@
 		"setenv rd_size ${filesize} && " \
 		"load blkmap 0:1 ${fdt_addr_r} gs101-oriole.dtb && " \
 		"booti ${kernel_addr_r} ${ramdisk_addr_r}:${rd_size} ${fdt_addr_r}\0" \
-	"bootmenu_0=Boot postmarketOS=run boot_pmos\0" \
-	"bootmenu_1=U-Boot console=echo\0" \
-	"bootmenu_2=Scan UFS=ufs init; scsi scan\0" \
-	"bootmenu_3=Reboot=reset\0" \
-	"bootmenu_4=Power off=poweroff\0" \
+	"boot_efi=run pmos_map; " \
+		"load blkmap 0:1 ${fdt_addr_r} gs101-oriole.dtb && " \
+		"load blkmap 0:1 ${kernel_addr_r} EFI/BOOT/BOOTAA64.EFI && " \
+		"bootefi ${kernel_addr_r} ${fdt_addr_r}\0" \
+	"bootmenu_0=systemd-boot (ESP)=run boot_efi\0" \
+	"bootmenu_1=Boot postmarketOS=run boot_pmos\0" \
+	"bootmenu_2=U-Boot console=echo\0" \
+	"bootmenu_3=Scan UFS=ufs init; scsi scan\0" \
+	"bootmenu_4=Reboot=reset\0" \
+	"bootmenu_5=Power off=poweroff\0" \
 	"bootcmd=bootmenu 30\0"
 
 #endif

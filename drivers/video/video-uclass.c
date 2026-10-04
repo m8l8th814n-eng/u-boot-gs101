@@ -491,6 +491,11 @@ static void video_flush_copy(struct udevice *vid)
 }
 
 /* Flush video activity to the caches */
+/* Lets a board push a finished frame to a command-mode panel */
+__weak void board_video_sync(void)
+{
+}
+
 int video_sync(struct udevice *vid, bool force)
 {
 	struct video_priv *priv = dev_get_uclass_priv(vid);
@@ -514,6 +519,8 @@ int video_sync(struct udevice *vid, bool force)
 
 	if (IS_ENABLED(CONFIG_VIDEO_COPY))
 		video_flush_dcache(vid, true);
+
+	board_video_sync();
 
 #if defined(CONFIG_VIDEO_SANDBOX_SDL)
 	/* to see the copy framebuffer, use priv->copy_fb */

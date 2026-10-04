@@ -8,6 +8,13 @@
 #include <cpu_func.h>
 #include <cyclic.h>
 #include <debug_uart.h>
+#include <dm.h>
+#include <sysreset.h>
+#include <stdio_dev.h>
+#include <time.h>
+#include <video.h>
+#include <env.h>
+#include <linux/arm-smccc.h>
 #include <linux/bitops.h>
 #include <linux/sizes.h>
 
@@ -24,6 +31,9 @@
 #define DECON_SHD_UP_ALL	(BIT(31) | BIT(20) | GENMASK(5, 0))
 
 #define GS101_DPP0_DMA		0x1c0b0000
+#define RDMA_IN_CTRL_0		0x08
+#define IDMA_IMG_FORMAT_MASK	(0x3f << 8)
+#define IDMA_IMG_FORMAT_ARGB2101010	(19 << 8)
 #define RDMA_SRC_SIZE		0x10
 #define RDMA_IMG_SIZE		0x18
 #define RDMA_BASEADDR_Y8	0x40
@@ -137,6 +147,10 @@ static void oriole_take_over_display(void)
 {
 	u32 size = (2400 << 16) | FB_WIDTH;
 
+	/*
+	 * clrsetbits_le32(GS101_DPP0_DMA + RDMA_IN_CTRL_0, IDMA_IMG_FORMAT_MASK,
+	 *		IDMA_IMG_FORMAT_ARGB2101010);
+	 */
 	writel(size, GS101_DPP0_DMA + RDMA_SRC_SIZE);
 	writel(size, GS101_DPP0_DMA + RDMA_IMG_SIZE);
 	writel(ORIOLE_FB, GS101_DPP0_DMA + RDMA_BASEADDR_Y8);
@@ -156,8 +170,100 @@ int board_early_init_f(void)
 	return 0;
 }
 
+void board_video_sync(void)
+{
+	oriole_kick();
+}
+
+/*
+ * Volume keys as console input, so menus work without a keyboard:
+ * volume up = arrow up, volume down = arrow down, both = Enter.
+ * The keys sit in the far-alive pin controller and read low when pressed.
+ */
+#define GS101_FAR_ALIVE		0x174e0000
+#define GPA7_DAT		(GS101_FAR_ALIVE + 0x24)
+#define GPA8_DAT		(GS101_FAR_ALIVE + 0x44)
+#define KEY_VOLDOWN_BIT		BIT(3)
+#define KEY_VOLUP_BIT		BIT(1)
+
+static char keys_buf[4];
+static int keys_len, keys_pos;
+static int keys_last;
+static ulong keys_time;
+
+static int keys_read(void)
+{
+	int up = !(readl(GPA8_DAT) & KEY_VOLUP_BIT);
+	int down = !(readl(GPA7_DAT) & KEY_VOLDOWN_BIT);
+
+	return (up ? 1 : 0) | (down ? 2 : 0);
+}
+
+static void keys_poll(void)
+{
+	int now;
+
+	if (keys_pos < keys_len || get_timer(keys_time) < 30)
+		return;
+	keys_time = get_timer(0);
+
+	now = keys_read();
+	if (now == keys_last)
+		return;
+	if (now == 3) {
+		keys_buf[0] = '\r';
+		keys_len = 1;
+	} else if (now && !keys_last) {
+		keys_buf[0] = 0x1b;
+		keys_buf[1] = '[';
+		keys_buf[2] = now == 1 ? 'A' : 'B';
+		keys_len = 3;
+	} else {
+		keys_len = 0;
+	}
+	keys_pos = 0;
+	keys_last = now;
+}
+
+static int keys_tstc(struct stdio_dev *dev)
+{
+	keys_poll();
+	return keys_pos < keys_len;
+}
+
+static int keys_getc(struct stdio_dev *dev)
+{
+	while (!keys_tstc(dev))
+		schedule();
+	return keys_buf[keys_pos++];
+}
+
+static void oriole_keys_register(void)
+{
+	struct stdio_dev dev = {
+		.name	= "buttons",
+		.flags	= DEV_FLAGS_INPUT,
+		.tstc	= keys_tstc,
+		.getc	= keys_getc,
+	};
+
+	keys_last = keys_read();
+	stdio_register(&dev);
+}
+
+static int oriole_video_ret = 1;
+
 int board_early_init_r(void)
 {
+	struct udevice *vid;
+	int ret;
+
+	ret = uclass_first_device_err(UCLASS_VIDEO, &vid);
+	oriole_video_ret = ret;
+	if (ret)
+		printf("oriole: video probe failed %d\n", ret);
+
+	oriole_keys_register();
 	/* oriole_mark(4, 0xff00ffff); */
 	return 0;
 }
@@ -212,6 +318,7 @@ static void oriole_dump_dsim(void)
 
 int board_late_init(void)
 {
+	env_set_ulong("oriole_video_ret", (ulong)(long)oriole_video_ret);
 	/* oriole_mark(3, 0xff0000ff); */
 	/* oriole_bits(920, readl(GS101_DSIM0 + 0x0c)); */
 	/* oriole_bits(1000, readl(GS101_DSIM0 + 0x1c)); */
@@ -222,3 +329,50 @@ int board_late_init(void)
 void ft_board_setup_ex(void *blob, struct bd_info *bd)
 {
 }
+
+#define TENSOR_SMC_PMU_SEC_REG	0x82000504
+#define TENSOR_PMUREG_RMW	2
+#define GS101_PMU		0x17460000
+#define PMU_SYSTEM_CONFIGURATION	0x3a00
+#define PMU_SWRESET_SYSTEM	BIT(1)
+#define PMU_PAD_CTRL_PWR_HOLD	0x3e9c
+#define PMU_PWR_HOLD		BIT(8)
+
+static void oriole_pmu_rmw(u32 reg, u32 mask, u32 val)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(TENSOR_SMC_PMU_SEC_REG, GS101_PMU + reg,
+		      TENSOR_PMUREG_RMW, mask, val, 0, 0, 0, &res);
+}
+
+static int oriole_sysreset_request(struct udevice *dev, enum sysreset_t type)
+{
+	switch (type) {
+	case SYSRESET_WARM:
+	case SYSRESET_COLD:
+		oriole_pmu_rmw(PMU_SYSTEM_CONFIGURATION, PMU_SWRESET_SYSTEM,
+			       PMU_SWRESET_SYSTEM);
+		break;
+	case SYSRESET_POWER_OFF:
+		oriole_pmu_rmw(PMU_PAD_CTRL_PWR_HOLD, PMU_PWR_HOLD, 0);
+		break;
+	default:
+		return -EPROTONOSUPPORT;
+	}
+	return -EINPROGRESS;
+}
+
+static struct sysreset_ops oriole_sysreset_ops = {
+	.request = oriole_sysreset_request,
+};
+
+U_BOOT_DRIVER(oriole_sysreset) = {
+	.name	= "oriole_sysreset",
+	.id	= UCLASS_SYSRESET,
+	.ops	= &oriole_sysreset_ops,
+};
+
+U_BOOT_DRVINFO(oriole_sysreset) = {
+	.name	= "oriole_sysreset",
+};

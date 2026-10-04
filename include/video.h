@@ -296,6 +296,11 @@ int video_draw_box(struct udevice *dev, int x0, int y0, int x1, int y1,
 int video_sync(struct udevice *vid, bool force);
 
 /**
+ * board_video_sync() - board hook run after the frame buffer is flushed
+ */
+void board_video_sync(void);
+
+/**
  * video_sync_all() - Sync all devices' frame buffers with their hardware
  *
  * This calls video_sync() on all active video devices.

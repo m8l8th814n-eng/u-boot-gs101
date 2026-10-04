@@ -227,6 +227,8 @@ static int gs101_ufs_device_reset(struct ufs_hba *hba)
 	hci_writel(ufs, 0, HCI_GPIO_OUT);
 	udelay(5);
 	hci_writel(ufs, 1, HCI_GPIO_OUT);
+	/* the first link startup after a reset found no device without this */
+	mdelay(20);
 	return 0;
 }
 

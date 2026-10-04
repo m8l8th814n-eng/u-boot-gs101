@@ -671,9 +671,15 @@ static void ufshcd_host_memory_configure(struct ufs_hba *hba)
 	response_offset = offsetof(struct utp_transfer_cmd_desc, response_upiu);
 	prdt_offset = offsetof(struct utp_transfer_cmd_desc, prd_table);
 
-	utrdlp->response_upiu_offset = cpu_to_le16(response_offset >> 2);
-	utrdlp->prd_table_offset = cpu_to_le16(prdt_offset >> 2);
-	utrdlp->response_upiu_length = cpu_to_le16(ALIGNED_UPIU_SIZE >> 2);
+	if (hba->quirks & UFSHCD_QUIRK_PRDT_BYTE_GRAN) {
+		utrdlp->response_upiu_offset = cpu_to_le16(response_offset);
+		utrdlp->prd_table_offset = cpu_to_le16(prdt_offset);
+		utrdlp->response_upiu_length = cpu_to_le16(ALIGNED_UPIU_SIZE);
+	} else {
+		utrdlp->response_upiu_offset = cpu_to_le16(response_offset >> 2);
+		utrdlp->prd_table_offset = cpu_to_le16(prdt_offset >> 2);
+		utrdlp->response_upiu_length = cpu_to_le16(ALIGNED_UPIU_SIZE >> 2);
+	}
 
 	hba->ucd_req_ptr = (struct utp_upiu_req *)hba->ucdl;
 	hba->ucd_rsp_ptr =
@@ -1653,7 +1659,11 @@ static void prepare_prdt_table(struct ufs_hba *hba, struct scsi_cmd *pccb)
 
 	prepare_prdt_desc(hba, &prd_table[table_length - i - 1], buf, datalen - 1);
 
-	req_desc->prd_table_length = table_length;
+	if (hba->quirks & UFSHCD_QUIRK_PRDT_BYTE_GRAN)
+		req_desc->prd_table_length =
+			cpu_to_le16(table_length * sizeof(struct ufshcd_sg_entry));
+	else
+		req_desc->prd_table_length = table_length;
 	ufshcd_cache_flush(prd_table, sizeof(*prd_table) * table_length);
 	ufshcd_cache_flush(req_desc, sizeof(*req_desc));
 }
@@ -1677,6 +1687,15 @@ static int ufs_scsi_exec(struct udevice *scsi_dev, struct scsi_cmd *pccb)
 	ufshcd_cache_invalidate(pccb->pdata, pccb->datalen);
 
 	ocs = ufshcd_get_tr_ocs(hba);
+	/*
+	 * Some hosts (Exynos) report OCS_FATAL_ERROR whenever the response
+	 * UPIU carries a non-zero response or SCSI status; treat that as a
+	 * completed transfer and let the status below decide, as Linux does.
+	 */
+	if ((hba->quirks & UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR) &&
+	    ocs == OCS_FATAL_ERROR &&
+	    ufshcd_get_rsp_upiu_result(hba->ucd_rsp_ptr))
+		ocs = OCS_SUCCESS;
 	switch (ocs) {
 	case OCS_SUCCESS:
 		result = ufshcd_get_req_rsp(hba->ucd_rsp_ptr);

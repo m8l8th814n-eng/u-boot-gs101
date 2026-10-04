@@ -24,3 +24,21 @@
 &ufs_0_phy {
 	status = "okay";
 };
+
+/*
+ * simple_video reads memory-region with the default 2+2 cells, but the
+ * splash node under /reserved-memory has #size-cells = 1, so the address
+ * decodes as FDT_ADDR_T_NONE and probe fails with -EINVAL. Give the
+ * framebuffer its own reg instead.
+ */
+&{/chosen} {
+	#address-cells = <2>;
+	#size-cells = <2>;
+};
+
+&framebuffer0 {
+	bootph-all;
+	/* format = "a2r10g10b10"; */
+	/delete-property/ memory-region;
+	reg = <0x0 0xfac00000 0x0 0x9e3400>;
+};

@@ -15,6 +15,8 @@
 #include <video.h>
 #include <env.h>
 #include <malloc.h>
+#include <lmb.h>
+#include <efi_loader.h>
 #include <command.h>
 #include <mapmem.h>
 #include <u-boot/lz4.h>
@@ -319,9 +321,13 @@ U_BOOT_CMD(unlz4l, 4, 0, do_unlz4l,
 
 /*
  * Volume keys as console input, so menus work without a keyboard:
- * volume up = arrow up, volume down = arrow down, both = Enter.
- * The keys sit in the far-alive pin controller and read low when pressed.
+ * volume up = arrow up, volume down = arrow down, power or both = Enter.
+ * The volume keys sit in the far-alive pin controller, power in the alive
+ * one (gpa10-1); all read low when pressed.
  */
+#define GS101_ALIVE		0x174d0000
+#define GPA10_DAT		(GS101_ALIVE + 0xe4)
+#define KEY_POWER_BIT		BIT(1)
 #define GS101_FAR_ALIVE		0x174e0000
 #define GPA7_DAT		(GS101_FAR_ALIVE + 0x24)
 #define GPA8_DAT		(GS101_FAR_ALIVE + 0x44)
@@ -338,7 +344,9 @@ static int keys_read(void)
 	int up = !(readl(GPA8_DAT) & KEY_VOLUP_BIT);
 	int down = !(readl(GPA7_DAT) & KEY_VOLDOWN_BIT);
 
-	return (up ? 1 : 0) | (down ? 2 : 0);
+	int power = !(readl(GPA10_DAT) & KEY_POWER_BIT);
+
+	return power ? 3 : (up ? 1 : 0) | (down ? 2 : 0);
 }
 
 static void keys_poll(void)
@@ -508,12 +516,63 @@ static int oriole_copy_node(const void *src, int soff, void *dst, int doff)
 	return 0;
 }
 
+/*
+ * The stock bootloader adds reserved-memory nodes at run time that are
+ * not in the kernel's device tree: secure DRAM and its page tables
+ * (sec_dram, sec_pt), pKVM guest firmware and debug_kinfo. Linux must not
+ * touch them, so carry over every node the kernel's tree lacks.
+ */
+static void oriole_copy_reserved(void *blob)
+{
+	const void *abl = oriole_abl_copy;
+	const char *name;
+	int soff, doff, sub, dsub;
+
+	soff = fdt_path_offset(abl, "/reserved-memory");
+	doff = fdt_path_offset(blob, "/reserved-memory");
+	if (soff < 0 || doff < 0)
+		return;
+	fdt_for_each_subnode(sub, abl, soff) {
+		name = fdt_get_name(abl, sub, NULL);
+		if (fdt_subnode_offset(blob, doff, name) >= 0)
+			continue;
+		dsub = fdt_add_subnode(blob, doff, name);
+		if (dsub < 0 || oriole_copy_node(abl, sub, blob, dsub))
+			printf("oriole: copying reserved-memory/%s failed\n", name);
+	}
+}
+
+/* keep U-Boot and EFI allocations out of the same regions */
+static void oriole_reserve_abl_regions(void)
+{
+	const void *abl = oriole_abl_copy;
+	const fdt32_t *reg;
+	phys_addr_t base;
+	u64 size;
+	int off, sub, len;
+
+	off = fdt_path_offset(abl, "/reserved-memory");
+	if (off < 0)
+		return;
+	fdt_for_each_subnode(sub, abl, off) {
+		reg = fdt_getprop(abl, sub, "reg", &len);
+		if (!reg || len != 12)
+			continue;
+		base = ((u64)fdt32_to_cpu(reg[0]) << 32) | fdt32_to_cpu(reg[1]);
+		size = fdt32_to_cpu(reg[2]);
+		lmb_alloc_mem(LMB_MEM_ALLOC_ADDR, 0, &base, size, LMB_NOMAP);
+		if (IS_ENABLED(CONFIG_EFI_LOADER))
+			efi_add_memory_map(base, size, EFI_RESERVED_MEMORY_TYPE);
+	}
+}
+
 int ft_board_setup(void *blob, struct bd_info *bd)
 {
 	int soff, doff, ret;
 
 	if (!oriole_abl_copy)
 		return 0;
+	oriole_copy_reserved(blob);
 	soff = fdt_path_offset(oriole_abl_copy, "/chosen");
 	if (soff < 0)
 		return 0;
@@ -534,6 +593,8 @@ int board_late_init(void)
 	env_set_ulong("oriole_video_ret", (ulong)(long)oriole_video_ret);
 	env_set_hex("abl_fdt", oriole_abl_fdt);
 	oriole_save_abl_fdt();
+	if (oriole_abl_copy)
+		oriole_reserve_abl_regions();
 	/* oriole_mark(3, 0xff0000ff); */
 	/* oriole_bits(920, readl(GS101_DSIM0 + 0x0c)); */
 	/* oriole_bits(1000, readl(GS101_DSIM0 + 0x1c)); */

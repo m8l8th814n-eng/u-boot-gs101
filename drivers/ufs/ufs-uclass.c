@@ -1637,6 +1637,7 @@ static void prepare_prdt_table(struct ufs_hba *hba, struct scsi_cmd *pccb)
 	struct utp_transfer_req_desc *req_desc = hba->utrdl;
 	struct ufshcd_sg_entry *prd_table = hba->ucd_prdt_ptr;
 	ulong datalen = pccb->datalen;
+	ulong seg = hba->max_prdt_entry ? hba->max_prdt_entry : MAX_PRDT_ENTRY;
 	int table_length;
 	u8 *buf;
 	int i;
@@ -1647,14 +1648,14 @@ static void prepare_prdt_table(struct ufs_hba *hba, struct scsi_cmd *pccb)
 		return;
 	}
 
-	table_length = DIV_ROUND_UP(pccb->datalen, MAX_PRDT_ENTRY);
+	table_length = DIV_ROUND_UP(pccb->datalen, seg);
 	buf = pccb->pdata;
 	i = table_length;
 	while (--i) {
 		prepare_prdt_desc(hba, &prd_table[table_length - i - 1], buf,
-				  MAX_PRDT_ENTRY - 1);
-		buf += MAX_PRDT_ENTRY;
-		datalen -= MAX_PRDT_ENTRY;
+				  seg - 1);
+		buf += seg;
+		datalen -= seg;
 	}
 
 	prepare_prdt_desc(hba, &prd_table[table_length - i - 1], buf, datalen - 1);
@@ -2235,6 +2236,12 @@ int ufshcd_probe(struct udevice *ufs_dev, struct ufs_hba_ops *hba_ops)
 		dev_err(hba->dev, "Host controller init failed: %i\n", err);
 		return err;
 	}
+
+	/* a host with smaller PRDT entries fits less data in one request */
+	if (hba->max_prdt_entry)
+		scsi_plat->max_bytes_per_req =
+			min_t(ulong, UFS_MAX_BYTES,
+			      (ulong)hba->max_prdt_entry * MAX_BUFF);
 
 	/* Read capabilities registers */
 	hba->capabilities = ufshcd_readl(hba, REG_CONTROLLER_CAPABILITIES);

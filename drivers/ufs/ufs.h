@@ -706,6 +706,8 @@ struct ufs_hba {
 	u32			version;
 	u32			intr_mask;
 	enum ufshcd_quirks	quirks;
+	/* largest data segment per PRDT entry; 0 = MAX_PRDT_ENTRY */
+	u32			max_prdt_entry;
 
 	/* Virtual memory reference */
 	struct utp_transfer_cmd_desc *ucdl;

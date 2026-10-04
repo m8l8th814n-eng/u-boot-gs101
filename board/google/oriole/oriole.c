@@ -14,6 +14,11 @@
 #include <time.h>
 #include <video.h>
 #include <env.h>
+#include <malloc.h>
+#include <command.h>
+#include <mapmem.h>
+#include <u-boot/lz4.h>
+#include <linux/unaligned/le_byteshift.h>
 #include <fdt_support.h>
 #include <linux/libfdt.h>
 #include <linux/arm-smccc.h>
@@ -244,8 +249,73 @@ int board_early_init_f(void)
 
 void board_video_sync(void)
 {
+	static bool busy;
+	struct udevice *vid;
+
+	/* keep the U-Boot logo in the top right corner over menus and text */
+	if (!busy && !uclass_first_device_err(UCLASS_VIDEO, &vid)) {
+		busy = true;
+		video_bmp_display(vid, map_to_sysmem(video_get_u_boot_logo()),
+				  -4, 4, true);
+		busy = false;
+	}
 	oriole_kick();
 }
+
+/*
+ * The kernel's Image.lz4 uses the LZ4 legacy format (lz4 -l): a 0x184c2102
+ * magic, then blocks of a 32-bit compressed length and an LZ4 block of up
+ * to 8 MiB uncompressed, with the uncompressed size appended at the end.
+ * U-Boot only knows the LZ4 frame format, so unpack it here.
+ */
+#define LZ4_LEGACY_MAGIC	0x184c2102
+#define LZ4_LEGACY_BLOCK	(8 << 20)
+
+static int do_unlz4l(struct cmd_tbl *cmdtp, int flag, int argc,
+		     char *const argv[])
+{
+	const u8 *src, *end;
+	u8 *dst, *out;
+	ulong srclen;
+	u32 len;
+	int n;
+
+	if (argc != 4)
+		return CMD_RET_USAGE;
+	src = map_sysmem(hextoul(argv[1], NULL), 0);
+	dst = out = map_sysmem(hextoul(argv[2], NULL), 0);
+	srclen = hextoul(argv[3], NULL);
+	end = src + srclen;
+
+	if (srclen < 8 || get_unaligned_le32(src) != LZ4_LEGACY_MAGIC) {
+		printf("not an LZ4 legacy stream\n");
+		return CMD_RET_FAILURE;
+	}
+	src += 4;
+	while (end - src > 4) {
+		len = get_unaligned_le32(src);
+		src += 4;
+		if (len == LZ4_LEGACY_MAGIC)
+			continue;
+		if (!len || len > end - src)
+			break;
+		n = LZ4_decompress_safe((const char *)src, (char *)out, len,
+					LZ4_LEGACY_BLOCK);
+		if (n < 0) {
+			printf("lz4 block error %d\n", n);
+			return CMD_RET_FAILURE;
+		}
+		src += len;
+		out += n;
+	}
+	printf("%lu bytes unpacked\n", (ulong)(out - dst));
+	env_set_hex("filesize", out - dst);
+	return CMD_RET_SUCCESS;
+}
+
+U_BOOT_CMD(unlz4l, 4, 0, do_unlz4l,
+	   "unpack an LZ4 legacy stream (kernel Image.lz4)",
+	   "<src> <dst> <srclen>");
 
 /*
  * Volume keys as console input, so menus work without a keyboard:
@@ -388,10 +458,82 @@ static void oriole_dump_dsim(void)
 		       readl(GS101_DSIM0 + regs[i].off));
 }
 
+/*
+ * A private copy of the stock bootloader's device tree, taken once U-Boot
+ * runs from its relocated copy and before anything loads over the
+ * original. Its /chosen (bootargs from vendor_boot, BT and Wi-Fi
+ * addresses in config/, plat for the modem) is handed on to Linux.
+ */
+static void *oriole_abl_copy;
+
+static void oriole_save_abl_fdt(void)
+{
+	const void *fdt = (const void *)oriole_abl_fdt;
+	int size;
+
+	if (!fdt || fdt_check_header(fdt))
+		return;
+	size = fdt_totalsize(fdt);
+	oriole_abl_copy = memalign(8, size);
+	if (oriole_abl_copy)
+		memcpy(oriole_abl_copy, fdt, size);
+}
+
+static int oriole_copy_node(const void *src, int soff, void *dst, int doff)
+{
+	const char *name;
+	const void *val;
+	int prop, sub, dsub, len, ret;
+
+	fdt_for_each_property_offset(prop, src, soff) {
+		val = fdt_getprop_by_offset(src, prop, &name, &len);
+		if (!val || !strcmp(name, "linux,initrd-start") ||
+		    !strcmp(name, "linux,initrd-end"))
+			continue;
+		ret = fdt_setprop(dst, doff, name, val, len);
+		if (ret)
+			return ret;
+	}
+	fdt_for_each_subnode(sub, src, soff) {
+		name = fdt_get_name(src, sub, NULL);
+		dsub = fdt_subnode_offset(dst, doff, name);
+		if (dsub < 0)
+			dsub = fdt_add_subnode(dst, doff, name);
+		if (dsub < 0)
+			return dsub;
+		ret = oriole_copy_node(src, sub, dst, dsub);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+int ft_board_setup(void *blob, struct bd_info *bd)
+{
+	int soff, doff, ret;
+
+	if (!oriole_abl_copy)
+		return 0;
+	soff = fdt_path_offset(oriole_abl_copy, "/chosen");
+	if (soff < 0)
+		return 0;
+	doff = fdt_path_offset(blob, "/chosen");
+	if (doff < 0)
+		doff = fdt_add_subnode(blob, 0, "chosen");
+	if (doff < 0)
+		return doff;
+	ret = oriole_copy_node(oriole_abl_copy, soff, blob, doff);
+	if (ret)
+		printf("oriole: copying bootloader /chosen failed: %s\n",
+		       fdt_strerror(ret));
+	return 0;
+}
+
 int board_late_init(void)
 {
 	env_set_ulong("oriole_video_ret", (ulong)(long)oriole_video_ret);
 	env_set_hex("abl_fdt", oriole_abl_fdt);
+	oriole_save_abl_fdt();
 	/* oriole_mark(3, 0xff0000ff); */
 	/* oriole_bits(920, readl(GS101_DSIM0 + 0x0c)); */
 	/* oriole_bits(1000, readl(GS101_DSIM0 + 0x1c)); */

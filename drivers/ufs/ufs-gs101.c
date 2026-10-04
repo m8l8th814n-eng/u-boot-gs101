@@ -572,6 +572,9 @@ static int gs101_ufs_init(struct ufs_hba *hba)
 	reg = hci_readl(ufs, HCI_IOP_ACG_DISABLE);
 	hci_writel(ufs, reg & ~HCI_IOP_ACG_DISABLE_EN, HCI_IOP_ACG_DISABLE);
 
+	/* HCI_TX/RXPRDT_ENTRY_SIZE is set for 4 KiB entries, as in Linux */
+	hba->max_prdt_entry = 1 << DATA_UNIT_SHIFT;
+
 	hba->quirks = UFSHCD_QUIRK_PRDT_BYTE_GRAN |
 		      UFSHCI_QUIRK_SKIP_RESET_INTR_AGGR |
 		      UFSHCI_QUIRK_BROKEN_REQ_LIST_CLR |

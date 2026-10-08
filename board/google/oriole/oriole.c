@@ -25,6 +25,8 @@
 #include <linux/libfdt.h>
 #include <linux/arm-smccc.h>
 #include <linux/bitops.h>
+#include <linux/bitfield.h>
+#include <linux/delay.h>
 #include <linux/sizes.h>
 
 #define GS101_WDT_CL0		0x10060000
@@ -621,6 +623,249 @@ static void oriole_pmu_rmw(u32 reg, u32 mask, u32 val)
 	arm_smccc_smc(TENSOR_SMC_PMU_SEC_REG, GS101_PMU + reg,
 		      TENSOR_PMUREG_RMW, mask, val, 0, 0, 0, &res);
 }
+
+#define GS101_CMU_HSI0		0x11000000
+#define GS101_USB_PHY		0x11100000
+#define GS101_USB_DWC3		0x11110000
+#define DWC3_GSNPSID		0xc120
+#define CMU_GATE_MANUAL		BIT(21)
+#define CMU_MUX_USB20_REF	0x1004
+
+#define PHY_LINKCTRL			0x04
+#define PHY_LINKCTRL_FORCE_RXELECIDLE	BIT(18)
+#define PHY_LINKCTRL_FORCE_PHYSTATUS	BIT(17)
+#define PHY_LINKCTRL_FORCE_PIPE_EN	BIT(16)
+#define PHY_LINKCTRL_FORCE_QACT		BIT(8)
+#define PHY_LINKCTRL_BUS_FILTER_BYPASS	GENMASK(7, 4)
+#define PHY_LINKPORT			0x08
+#define PHY_LINKPORT_HOST_NUM_U3	GENMASK(19, 16)
+#define PHY_CLKRST			0x20
+#define PHY_CLKRST_PHY20_SW_POR		BIT(13)
+#define PHY_CLKRST_PHY20_SW_POR_SEL	BIT(12)
+#define PHY_CLKRST_PHY_SW_RST		BIT(3)
+#define PHY_CLKRST_PHY_RESET_SEL	BIT(2)
+#define PHY_CLKRST_PORT_RST		BIT(1)
+#define PHY_SSPPLLCTL			0x30
+#define PHY_SSPPLLCTL_FSEL		GENMASK(2, 0)
+#define PHY_SECPMACTL			0x48
+#define PHY_SECPMACTL_PMA_LOW_PWR	BIT(4)
+#define PHY_UTMI			0x50
+#define PHY_UTMI_FORCE_VBUSVALID	BIT(5)
+#define PHY_UTMI_FORCE_BVALID		BIT(4)
+#define PHY_UTMI_DP_PULLDOWN		BIT(3)
+#define PHY_UTMI_DM_PULLDOWN		BIT(2)
+#define PHY_UTMI_FORCE_SUSPEND		BIT(1)
+#define PHY_UTMI_FORCE_SLEEP		BIT(0)
+#define PHY_HSP				0x54
+#define PHY_HSP_FSV_OUT_EN		BIT(24)
+#define PHY_HSP_VBUSVLDEXTSEL		BIT(13)
+#define PHY_HSP_VBUSVLDEXT		BIT(12)
+#define PHY_HSP_EN_UTMISUSPEND		BIT(9)
+#define PHY_HSP_COMMONONN		BIT(8)
+#define PHY_HSPPARACON			0x58
+#define PHY_HSPPARACON_TXVREF		GENMASK(31, 28)
+#define PHY_HSPPARACON_TXRES		GENMASK(22, 21)
+#define PHY_HSPPARACON_TXPREEMPAMP	GENMASK(19, 18)
+#define PHY_HSPPARACON_SQRX		GENMASK(10, 8)
+#define PHY_HSPPARACON_COMPDIS		GENMASK(2, 0)
+#define PHY_HSP_TEST			0x5c
+#define PHY_HSP_TEST_SIDDQ		BIT(24)
+#define PMU_PHY_CTRL_USB20	0x3eb0
+#define PMU_PHY_CTRL_USBDP	0x3eb4
+#define PMU_PHY_ENABLE		BIT(0)
+
+static const struct {
+	const char *name;
+	u32 off;
+	bool gate;
+} oriole_usb_regs[] = {
+	{ "USB20_USER", 0x0640 },
+	{ "USB31DRD_USER", 0x0650 },
+	{ "MUX_USB20_REF", 0x1004 },
+	{ "MUX_USB31DRD", 0x1008 },
+	{ "SUSPEND_CLK_26", 0x2004, true },
+	{ "UASC_CTRL_ACLK", 0x205c, true },
+	{ "UASC_CTRL_PCLK", 0x2060, true },
+	{ "UASC_LINK_ACLK", 0x2064, true },
+	{ "UASC_LINK_PCLK", 0x2068, true },
+	{ "ACLK_PHYCTRL", 0x206c, true },
+	{ "BUS_CLK_EARLY", 0x2070, true },
+	{ "USB20_PHY_REF26", 0x2074, true },
+	{ "REF_CLK_40", 0x2078, true },
+	{ "USBDPPHY_REF_PLL", 0x207c, true },
+	{ "USBDPPHY_SCL_APB", 0x2080, true },
+	{ "USBPCS_APB", 0x2084, true },
+	{ "USBDPPHY_ACLK", 0x2088, true },
+	{ "USBDPPHY_UDBG", 0x208c, true },
+};
+
+static void oriole_usb_dump(void)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(oriole_usb_regs); i++) {
+		printf("CMU %-17s ", oriole_usb_regs[i].name);
+		printf("0x%08x\n", readl(GS101_CMU_HSI0 + oriole_usb_regs[i].off));
+	}
+	printf("PMU %-17s ", "PHY_CTRL_USB20");
+	printf("0x%08x\n", readl(GS101_PMU + PMU_PHY_CTRL_USB20));
+	printf("PMU %-17s ", "PHY_CTRL_USBDP");
+	printf("0x%08x\n", readl(GS101_PMU + PMU_PHY_CTRL_USBDP));
+}
+
+static void oriole_usb_enable(void)
+{
+	oriole_pmu_rmw(PMU_PHY_CTRL_USB20, PMU_PHY_ENABLE, PMU_PHY_ENABLE);
+	oriole_pmu_rmw(PMU_PHY_CTRL_USBDP, PMU_PHY_ENABLE, PMU_PHY_ENABLE);
+	writel(1, GS101_CMU_HSI0 + CMU_MUX_USB20_REF);
+}
+
+static void oriole_usb_phy_init(void)
+{
+	u32 reg, ss_ports;
+
+	setbits_le32(GS101_USB_PHY + PHY_LINKCTRL, PHY_LINKCTRL_FORCE_QACT);
+
+	ss_ports = FIELD_GET(PHY_LINKPORT_HOST_NUM_U3,
+			     readl(GS101_USB_PHY + PHY_LINKPORT));
+
+	reg = readl(GS101_USB_PHY + PHY_CLKRST);
+	if (ss_ports)
+		reg |= PHY_CLKRST_PHY20_SW_POR | PHY_CLKRST_PHY20_SW_POR_SEL |
+		       PHY_CLKRST_PHY_RESET_SEL;
+	reg |= PHY_CLKRST_PHY_SW_RST;
+	writel(reg, GS101_USB_PHY + PHY_CLKRST);
+
+	clrbits_le32(GS101_USB_PHY + PHY_UTMI,
+		     PHY_UTMI_FORCE_SUSPEND | PHY_UTMI_FORCE_SLEEP |
+		     PHY_UTMI_DP_PULLDOWN | PHY_UTMI_DM_PULLDOWN);
+
+	setbits_le32(GS101_USB_PHY + PHY_HSP,
+		     PHY_HSP_EN_UTMISUSPEND | PHY_HSP_COMMONONN);
+
+	setbits_le32(GS101_USB_PHY + PHY_LINKCTRL,
+		     FIELD_PREP(PHY_LINKCTRL_BUS_FILTER_BYPASS, 0xf));
+
+	setbits_le32(GS101_USB_PHY + PHY_UTMI,
+		     PHY_UTMI_FORCE_BVALID | PHY_UTMI_FORCE_VBUSVALID);
+	setbits_le32(GS101_USB_PHY + PHY_HSP,
+		     PHY_HSP_VBUSVLDEXT | PHY_HSP_VBUSVLDEXTSEL);
+
+	clrsetbits_le32(GS101_USB_PHY + PHY_SSPPLLCTL, PHY_SSPPLLCTL_FSEL,
+			FIELD_PREP(PHY_SSPPLLCTL_FSEL, 6));
+
+	clrsetbits_le32(GS101_USB_PHY + PHY_HSPPARACON,
+			PHY_HSPPARACON_TXVREF | PHY_HSPPARACON_TXRES |
+			PHY_HSPPARACON_TXPREEMPAMP | PHY_HSPPARACON_SQRX |
+			PHY_HSPPARACON_COMPDIS,
+			FIELD_PREP(PHY_HSPPARACON_TXVREF, 6) |
+			FIELD_PREP(PHY_HSPPARACON_TXRES, 1) |
+			FIELD_PREP(PHY_HSPPARACON_TXPREEMPAMP, 3) |
+			FIELD_PREP(PHY_HSPPARACON_SQRX, 5) |
+			FIELD_PREP(PHY_HSPPARACON_COMPDIS, 7));
+
+	clrbits_le32(GS101_USB_PHY + PHY_HSP_TEST, PHY_HSP_TEST_SIDDQ);
+
+	udelay(10);
+	reg = readl(GS101_USB_PHY + PHY_CLKRST);
+	if (ss_ports) {
+		reg |= PHY_CLKRST_PHY20_SW_POR_SEL;
+		reg &= ~PHY_CLKRST_PHY20_SW_POR;
+	}
+	reg &= ~(PHY_CLKRST_PHY_SW_RST | PHY_CLKRST_PORT_RST);
+	writel(reg, GS101_USB_PHY + PHY_CLKRST);
+	udelay(75);
+
+	clrbits_le32(GS101_USB_PHY + PHY_HSP, PHY_HSP_FSV_OUT_EN);
+
+	if (ss_ports) {
+		reg = readl(GS101_USB_PHY + PHY_LINKCTRL);
+		reg &= ~PHY_LINKCTRL_FORCE_PHYSTATUS;
+		reg |= PHY_LINKCTRL_FORCE_PIPE_EN | PHY_LINKCTRL_FORCE_RXELECIDLE;
+		writel(reg, GS101_USB_PHY + PHY_LINKCTRL);
+		setbits_le32(GS101_USB_PHY + PHY_SECPMACTL, PHY_SECPMACTL_PMA_LOW_PWR);
+	}
+}
+
+static void oriole_usb_probe(void)
+{
+	static const struct {
+		const char *name;
+		u32 off;
+	} phy[] = {
+		{ "LINKCTRL", PHY_LINKCTRL },
+		{ "LINKPORT", PHY_LINKPORT },
+		{ "CLKRST", PHY_CLKRST },
+		{ "SSPPLLCTL", PHY_SSPPLLCTL },
+		{ "UTMI", PHY_UTMI },
+		{ "HSP", PHY_HSP },
+		{ "HSPPARACON", PHY_HSPPARACON },
+		{ "HSP_TEST", PHY_HSP_TEST },
+	};
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(phy); i++) {
+		printf("PHY %-12s ", phy[i].name);
+		printf("0x%08x\n", readl(GS101_USB_PHY + phy[i].off));
+	}
+	printf("DWC3 GSNPSID   ");
+	printf("0x%08x\n", readl(GS101_USB_DWC3 + DWC3_GSNPSID));
+}
+
+static int do_oriole_usb(struct cmd_tbl *cmdtp, int flag, int argc,
+			 char *const argv[])
+{
+	int i, step;
+
+	if (argc != 2)
+		return CMD_RET_USAGE;
+	step = dectoul(argv[1], NULL);
+
+	if (step == 1) {
+		oriole_usb_enable();
+		for (i = 0; i < ARRAY_SIZE(oriole_usb_regs); i++)
+			if (oriole_usb_regs[i].gate)
+				setbits_le32(GS101_CMU_HSI0 + oriole_usb_regs[i].off,
+					     CMU_GATE_MANUAL);
+	}
+	if (step == 2) {
+		oriole_usb_probe();
+		return CMD_RET_SUCCESS;
+	}
+	if (step == 5) {
+		oriole_usb_enable();
+		oriole_usb_phy_init();
+		return CMD_RET_SUCCESS;
+	}
+	if (step == 4) {
+		printf("-- before\n");
+		oriole_usb_probe();
+		printf("-- enable\n");
+		oriole_usb_enable();
+		printf("-- phy init\n");
+		oriole_usb_phy_init();
+		printf("-- after\n");
+		oriole_usb_probe();
+		printf("-- done\n");
+		return CMD_RET_SUCCESS;
+	}
+	if (step == 3) {
+		oriole_usb_dump();
+		printf("-- enable\n");
+		oriole_usb_enable();
+		oriole_usb_dump();
+		printf("-- probe\n");
+		oriole_usb_probe();
+		printf("-- done\n");
+		return CMD_RET_SUCCESS;
+	}
+	oriole_usb_dump();
+	return CMD_RET_SUCCESS;
+}
+
+U_BOOT_CMD(oriole_usb, 2, 0, do_oriole_usb,
+	   "bring up the USB31DRD block step by step",
+	   "<0|1|2|3|4|5>");
 
 static int oriole_sysreset_request(struct udevice *dev, enum sysreset_t type)
 {

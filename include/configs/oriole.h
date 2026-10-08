@@ -44,9 +44,15 @@
 	"bootmenu_1=Boot postmarketOS=run boot_pmos\0" \
 	"bootmenu_2=U-Boot console=echo\0" \
 	"bootmenu_3=USB console (fastboot boot only)=run usbcon\0" \
-	"bootmenu_4=Scan UFS=ufs init; scsi scan\0" \
-	"bootmenu_5=Reboot=reset\0" \
-	"bootmenu_6=Power off=poweroff\0" \
+	"bootmenu_4=USB console (boot_a)=echo usb: phy; oriole_usb 5; echo usb: acm; run usbcon; echo usb: done\0" \
+	"bootmenu_5=USB step 4: PHY init=oriole_usb 4; sleep 60\0" \
+	"bootmenu_6=USB step 3: all=oriole_usb 3; sleep 60\0" \
+	"bootmenu_7=USB step 0: dump=oriole_usb 0; sleep 20\0" \
+	"bootmenu_8=USB step 1: clocks+isolation=oriole_usb 1; sleep 20\0" \
+	"bootmenu_9=USB step 2: read PHY/DWC3=oriole_usb 2; sleep 20\0" \
+	"bootmenu_10=Scan UFS=ufs init; scsi scan\0" \
+	"bootmenu_11=Reboot=reset\0" \
+	"bootmenu_12=Power off=poweroff\0" \
 	"bootcmd=bootmenu 30\0"
 
 #endif

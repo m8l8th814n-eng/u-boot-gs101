@@ -29,14 +29,14 @@
 		"part size scsi 0 userdata udsize; " \
 		"blkmap destroy pmos; blkmap create pmos; " \
 		"blkmap map pmos 0 0x${udsize} linear scsi 0 0x${udstart}\0" \
-	"boot_pmos=run pmos_map; " \
+	"boot_pmos=oriole_usb 5; run pmos_map; " \
 		"load blkmap 0:1 ${kernel_comp_addr_r} vmlinuz && " \
 		"unlz4l ${kernel_comp_addr_r} ${kernel_addr_r} ${filesize} && " \
 		"load blkmap 0:1 ${ramdisk_addr_r} initramfs && " \
 		"setenv rd_size ${filesize} && " \
 		"load blkmap 0:1 ${fdt_addr_r} gs101-oriole.dtb && " \
 		"booti ${kernel_addr_r} ${ramdisk_addr_r}:${rd_size} ${fdt_addr_r}\0" \
-	"boot_efi=run pmos_map; " \
+	"boot_efi=oriole_usb 5; run pmos_map; " \
 		"load blkmap 0:1 ${fdt_addr_r} gs101-oriole.dtb && " \
 		"load blkmap 0:1 ${kernel_addr_r} EFI/BOOT/BOOTAA64.EFI && " \
 		"bootefi ${kernel_addr_r} ${fdt_addr_r}\0" \
